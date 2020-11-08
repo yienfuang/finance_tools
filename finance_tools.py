@@ -8,11 +8,18 @@ import plotly.express as px
 class Share:
 
     def __init__(self, brokerage):
+
+        # brokerage fee per trade ($)
         self.brokerage = brokerage
     
     def get_entry_price(self, capital, fairPrice):
         """
-        Calculate entry price for a stock, to cover brokerage
+        Calculate entry price for a stock, to cover for brokerage
+
+        Parameters
+        ----------
+        capital (float)   : amount of money intended for investment
+        fairPrice (float) : fair price to buy share at (excl. brokerage)
         """
 
         # calculate intended number of shares to buy
@@ -30,17 +37,37 @@ class Share:
         print("Buy {} shares at {}. Total cost: {}".format(nShares, entryPrice, nShares * entryPrice + self.brokerage))
     
     def get_stop_loss_cover_scenarios(self, nShares, entryPrice, stopLoss, coverEntryBrokerage=True):
-        
+        """
+        Get scenarios of trimming down positions to cover for stop loss
+
+        Parameters
+        ----------
+        nShares (int)              : number of shares held
+        entryPrice (float)         : price shares were bought at
+        stopLoss (frac)            : stop loss arranged, in fraction
+        coverEntryBrokerage (bool) : if True, cover for brokerage at entry, too; else, only cover for brokerages for profit taking and stop loss
+        """
+
+        # all possible number of shares to sell
         df = pd.DataFrame({"n_shares_to_sell": [s for s in range(1, nShares)]})
+
+        # number of shares remaining
         df["remaining_shares"] = nShares - df.n_shares_to_sell
+
+        # projected loss at stop
         df["stop_loss_amount"] = stopLoss * entryPrice * df.remaining_shares
         df.stop_loss_amount = df.stop_loss_amount.round(2)
 
+        # total amount of brokerage to cover
         nTrades = 3 if coverEntryBrokerage else 2
         totalBrokerage = nTrades * self.brokerage
 
+        # projected loss plus brokerage at stop
         df["stop_loss_amount_w_brokerage"] = df.stop_loss_amount + totalBrokerage
+
+        # get profit taking price
         df["exit_price"] = entryPrice + df.stop_loss_amount_w_brokerage / df.n_shares_to_sell
+        df.exit_price = df.exit_price.round(3)
 
         return df
 
