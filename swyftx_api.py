@@ -4,62 +4,91 @@ import pandas as pd
 import requests
 import time
 
-def getAUDPrice(coin:str="BTC", startTime=dt.datetime.now(), endTime=None, timezone:str="UTC", resolution="1m", ohlc:str="close", bidAsk:str="bid"):
-    """
-    Get 1-minute price
+class Crypto:
 
-    Parameters
-    ----------
-    coin     : Coin ticker, e.g. BTC, ETH, BNB
-    time     : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
-    timezone : Timezone in str e.g. 'UTC', 'Australia/Melbourne', 'Australia/Brisbane'
-    ohlc     : "open", "high", "low" or "close". Anything else, the whole json body is returned
-    bidAsk   : "bid" or "ask". Usually it will be bid, especially for staking rewards
-    """
-    assert bidAsk in ["bid", "ask"], "bidAsk should be 'bid' or 'ask'"
+    def __int__(self):
 
-    validRes = ["1m", "5m", "1h", "4h", "1d"]
-    assert resolution in validRes, f"resolution needs to be one of {', '.join(validRes)}"
-    roundMapping = {"1m": "T", "5m": "5T", "1h": "H", "4h": "4H", "1d": "D"}
+        pass
 
-    # round timestamp down to nearest minute
-    timeStart = pd.Timestamp(startTime, tz=timezone).round(freq=roundMapping[resolution])
+    def getAUDPrice(self, coin:str="BTC", startTime=dt.datetime.now(), endTime=None, timezone:str="UTC", resolution="1m", ohlc:str="close", bidAsk:str="bid"):
+        """
+        Get price
 
-    # API takes UNIX timestamp in milliseconds
-    timeStart = int(1000*timeStart.timestamp())
+        Parameters
+        ----------
+        coin     : Coin ticker, e.g. BTC, ETH, BNB
+        time     : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
+        timezone : Timezone in str e.g. 'UTC', 'Australia/Melbourne', 'Australia/Brisbane'
+        ohlc     : "open", "high", "low" or "close". Anything else, the whole json body is returned
+        bidAsk   : "bid" or "ask". Usually it will be bid, especially for staking rewards
+        """
+        assert bidAsk in ["bid", "ask"], "bidAsk should be 'bid' or 'ask'"
 
-    # allocate some block to the query
-    timeEnd   = pd.Timestamp(endTime, tz=timezone).round(freq=roundMapping[resolution]) if endTime else timeStart + 4*60*60*1000
-    if endTime:
-        timeEnd = int(1000*timeEnd.timestamp())
+        validRes = ["1m", "5m", "1h", "4h", "1d"]
+        assert resolution in validRes, f"resolution needs to be one of {', '.join(validRes)}"
+        roundMapping = {"1m": "T", "5m": "5T", "1h": "H", "4h": "4H", "1d": "D"}
 
-    # make API call and return price
-    apiURL = f"https://api.swyftx.com.au/charts/getBars/AUD/{coin}/{bidAsk}/?resolution={resolution}&timeStart={timeStart}&timeEnd={timeEnd}&limit=20000"
-    price = requests.get(apiURL).json()
+        # round timestamp down to nearest minute
+        timeStart = pd.Timestamp(startTime, tz=timezone).round(freq=roundMapping[resolution])
 
-    # return relevant price
-    return price["candles"][0][ohlc] if ohlc in ["open", "high", "low", "close"] else price
+        # API takes UNIX timestamp in milliseconds
+        timeStart = int(1000*timeStart.timestamp())
 
-startTime = dt.datetime(2016,12,26)
-prices = []
-startOfLoop = dt.datetime.now()
-while startTime < startOfLoop:
-    endTime = min(dt.datetime.now(), startTime + relDelta(years=2))
-    prices.extend(getAUDPrice(coin="WOO", startTime=startTime, endTime=endTime, resolution="1h", ohlc="", bidAsk="ask")["candles"])
-    startTime = endTime
-prices = pd.DataFrame(prices)
-prices["UTC"] = pd.to_datetime(prices.time, unit="ms")
-prices["hourOfDay"] = prices.UTC.dt.hour
-prices["dayOfWeek"] = prices.UTC.dt.dayofweek
-prices["id"] = prices.dayOfWeek.astype(str) + "_" + prices.hourOfDay.astype(str)
-dailies = prices.groupby("hourOfDay")["open"].mean().reset_index()
-dailies.sort_values("open", inplace=True)
+        # allocate some block to the query
+        timeEnd   = pd.Timestamp(endTime, tz=timezone).round(freq=roundMapping[resolution]) if endTime else timeStart + 4*60*60*1000
+        if endTime:
+            timeEnd = int(1000*timeEnd.timestamp())
+
+        # make API call and return price
+        apiURL = f"https://api.swyftx.com.au/charts/getBars/AUD/{coin}/{bidAsk}/?resolution={resolution}&timeStart={timeStart}&timeEnd={timeEnd}&limit=20000"
+        price = requests.get(apiURL).json()
+
+        # return relevant price
+        return price["candles"][0][ohlc] if ohlc in ["open", "high", "low", "close"] else price
+    
+    def getAllPrices(self, coin:str="BTC", startTime=dt.datetime(2016,12,26), lastTime=dt.datetime.now()):
+        """
+        Get prices over longer periods and return as pandas DataFrame
+        """
+        prices = []
+        while startTime < lastTime:
+            endTime = min(dt.datetime.now(), startTime + relDelta(years=2))
+            prices.extend(self.getAUDPrice(coin=coin, startTime=startTime, endTime=endTime, resolution="1h", ohlc="", bidAsk="ask")["candles"])
+            startTime = endTime
+        prices = pd.DataFrame(prices)
+        prices["UTC"] = pd.to_datetime(prices.time, unit="ms")
+        
+        return prices
+
+crypt = Crypto()
+allPrices = []
+for c in ["BTC", "ETH", "SOL", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO"]:
+    prices = crypt.getAllPrices(coin=c)
+    prices["coin"] = c
+    allPrices.append(prices)
+allPrices = pd.concat(allPrices, ignore_index=True)
+allPrices["AEST"] = allPrices.UTC + dt.timedelta(hours=10)
+allPrices["hourOfDay"] = allPrices.AEST.dt.hour
+allPrices["dayOfWeek"] = allPrices.AEST.dt.dayofweek
+allPrices["id"] = allPrices.dayOfWeek.astype(str) + "_" + allPrices.hourOfDay.astype(str)
+dailies = allPrices.groupby(["coin", "hourOfDay"])["open"].mean().reset_index()
+dailyCheapest = dailies.groupby("coin")["open"].min().reset_index()
+dailies = dailyCheapest.merge(dailies, how="inner", on=["coin", "open"])
+dailies.columns = ["coin", "dailyCheapest", "hourOfDay"]
+avgID = allPrices.groupby(["coin", "id"])["open"].mean().reset_index()
+idCheapest = avgID.groupby("coin")["open"].min().reset_index()
+avgID = idCheapest.merge(avgID, how="inner", on=["coin", "open"])
+avgID.columns = ["coin", "weeklyCheapest", "weeklyID"]
+bestTimes = dailies.merge(avgID, how="inner", on="coin")
+bestTimes
+
+
+import plotly.graph_objects  as go
+fig = go.Figure(data=[go.Candlestick(x=btc.AEST, open=btc.open, high=btc.high, low=btc.low, close=btc.close)])
+fig.to_html("C:/users/PC/btc.html")
+
+
 avgID = prices.groupby("id")["open"].mean().reset_index()
-avgID.sort_values("open", inplace=True)
-avgID
-
-avgPrice = prices.groupby("hourOfDay")["open"].mean().reset_index()
-avgID = prices[prices.dayOfMonth<=28].groupby("id")["open"].mean().reset_index()
 avgID.sort_values("open", inplace=True)
 
 prices["dateBin"] = prices.UTC.dt.date
