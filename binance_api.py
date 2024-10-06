@@ -77,7 +77,7 @@ class BinanceClient:
                 print(f"{pair} price at {timeStr} not found")
         elif coin == "BETH": # BETH starts with only BETH/ETH pair
             try:
-                return self.get_1m_price(pair="BETHETH", time=time, timezone=timezone) * self.get_1m_price(pair="ETHAUD", time=time, timezone=timezone)
+                return self.get_1m_price(pair="BETHETH", time=time, timezone=timezone) * self.get_1m_price(pair="ETHUSDT", time=time, timezone=timezone)
             except:
                 print(f"BETHETH or/and ETHAUD price at {timeStr} not found")
         else: # for other coins, try all possible bases i.e. AUD, USDT, and BUSD
@@ -88,12 +88,12 @@ class BinanceClient:
                 print(f"{pair} price at {timeStr} not found")
                 try:
                     pair = f"{coin}USDT"
-                    return self.get_1m_price(pair=pair, time=time, timezone=timezone) / self.get_1m_price(pair="AUDUSDT", time=time, timezone=timezone)
+                    return self.get_1m_price(pair=pair, time=time, timezone=timezone) # / self.get_1m_price(pair="AUDUSDT", time=time, timezone=timezone)
                 except:
                     print(f"{pair} price at {timeStr} not found")
                     try:
                         pair = f"{coin}BUSD"
-                        return self.get_1m_price(pair=pair, time=time, timezone=timezone) / self.get_1m_price(pair="AUDBUSD", time=time, timezone=timezone)
+                        return self.get_1m_price(pair=pair, time=time, timezone=timezone) # / self.get_1m_price(pair="AUDBUSD", time=time, timezone=timezone)
                     except:
                         print(f"{pair} price at {timeStr} not found")
 
@@ -159,11 +159,11 @@ binanceClient = BinanceClient()
 
 trades = binanceClient.get_trades()
 trades = trades[["symbol", "price", "qty", "quoteQty", "commission", "commissionAsset", "time", "isBuyer"]].copy()
-trades.to_parquet("C:/users/PC/OneDrive/Documents/Finance/Tax/FY2023/binance_trades.parquet")
+trades.to_parquet("C:/users/PC/OneDrive/Documents/Finance/Tax/FY2024/binance_trades.parquet")
 trades.rename({"symbol": "pair", "quoteQty": "baseQty"}, axis=1, inplace=True)
 trades["UTC"] = pd.to_datetime(trades.time, unit="ms")
-trades = trades[trades.UTC.between(dt.datetime(2022,6,21),dt.datetime(2023,6,30,14))].sort_values("UTC", ignore_index=True)
-trades.to_parquet("C:/users/PC/OneDrive/Documents/Finance/Tax/FY2023/binance_trades_fy23.parquet")
+trades = trades[trades.UTC.between(dt.datetime(2023,6,30,14),dt.datetime(2024,6,30,14))].sort_values("UTC", ignore_index=True)
+trades.to_parquet("C:/users/PC/OneDrive/Documents/Finance/Tax/FY2024/binance_trades_fy24.parquet")
 
 trades["nearesetUTC"] = trades.UTC.dt.round(freq="T")
 trades = trades.groupby(["nearesetUTC", "pair", "price", "commissionAsset", "isBuyer"])["qty", "baseQty", "commission"].sum().reset_index()
@@ -172,9 +172,9 @@ trades = trades.groupby(["nearesetUTC", "pair", "price", "commissionAsset", "isB
 allTrades = pd.read_parquet("C:/users/PC/OneDrive/Documents/Finance/Tax/FY2023/binance_trades.parquet")
 
 # get Binance interest and staking rewards
-startTime = dt.datetime(2022,6,30,14)
+startTime = dt.datetime(2023,6,30,14)
 histInt = []
-while startTime < dt.datetime(2023,6,30,14):
+while startTime < dt.datetime(2024,6,30,14):
     endTime = startTime + dt.timedelta(days=1)
     startUnixTime = int(1000 * dt.datetime.timestamp(startTime))
     endUnixTime = int(1000 * dt.datetime.timestamp(endTime))
@@ -190,7 +190,7 @@ for r in range(len(histInt)):
     coin = "ETH" if histInt.asset[r] == "BETH" else histInt.asset[r]
     time = histInt.nearestUTC[r]
     try:
-        histInt.loc[r, "AUDPrice"] = get1mAUDPrice(coin=coin, time=time)
+        histInt.loc[r, "AUDPrice"] = binanceClient.get_aud_rate(coin=coin, time=time)
     except Exception as e:
         print(f"can't find price for {coin} at {time}, with error: {e}")
 histInt.loc[histInt.asset=="WOO", "AUDPrice"] = .3
