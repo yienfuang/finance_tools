@@ -62,7 +62,7 @@ class Crypto:
 
 crypt = Crypto()
 allPrices = []
-for c in ["BTC", "ETH", "SOL", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO"]:
+for c in ["BTC", "ETH", "SOL", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO", "DOG"]:
     prices = crypt.getAllPrices(coin=c)
     prices["coin"] = c
     allPrices.append(prices)
