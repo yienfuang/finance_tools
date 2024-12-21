@@ -69,7 +69,7 @@ for c in ["BTC", "ETH", "SOL", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO"
 allPrices = pd.concat(allPrices, ignore_index=True)
 allPrices["AEST"] = allPrices.UTC + dt.timedelta(hours=10)
 allPrices["hourOfDay"] = allPrices.AEST.dt.hour
-allPrices["dayOfWeek"] = allPrices.AEST.dt.dayofweek
+allPrices["dayOfWeek"] = allPrices.AEST.dt.day_name()
 allPrices["id"] = allPrices.dayOfWeek.astype(str) + "_" + allPrices.hourOfDay.astype(str)
 dailies = allPrices.groupby(["coin", "hourOfDay"])["open"].mean().reset_index()
 dailyCheapest = dailies.groupby("coin")["open"].min().reset_index()
