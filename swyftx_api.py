@@ -26,7 +26,7 @@ class Crypto:
 
         validRes = ["1m", "5m", "1h", "4h", "1d"]
         assert resolution in validRes, f"resolution needs to be one of {', '.join(validRes)}"
-        roundMapping = {"1m": "T", "5m": "5T", "1h": "H", "4h": "4H", "1d": "D"}
+        roundMapping = {"1m": "T", "5m": "5T", "1h": "h", "4h": "4h", "1d": "D"}
 
         # round timestamp down to nearest minute
         timeStart = pd.Timestamp(startTime, tz=timezone).round(freq=roundMapping[resolution])
@@ -62,7 +62,7 @@ class Crypto:
 
 crypt = Crypto()
 allPrices = []
-for c in ["BTC", "ETH", "SOL", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO", "DOG"]:
+for c in ["BTC", "ETH", "SOL", "SUI", "LINK", "TAO", "STX", "INJ", "RUNE", "XTZ", "WOO", "DOG"]:
     prices = crypt.getAllPrices(coin=c)
     prices["coin"] = c
     allPrices.append(prices)
