@@ -3,10 +3,209 @@ import numpy as np
 import pandas as pd
 import pytz
 import time
+import talib
 
 # stand up Binance API client instance
 import os
 from binance.client import Client
+
+# plotly
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+
+dfList = []
+for pq in os.listdir("D:/binanceOHLC/"):
+    if pq.endswith(".parquet"):
+        try:
+            btc = pd.read_parquet(f"D:/binanceOHLC/{pq}")
+        except Exception as e:
+            print(f"Error reading {pq}: {e}")
+            continue
+    for r in [3,7,14,30,200]:
+        maCol = f"SMA{r}"
+        btc[maCol] = talib.SMA(btc.close, timeperiod=r)
+    for ad in [3,7,14,30,200]:
+        for apc in [5,10,20]:
+            amaCol = f"SMA{ad}"
+            aboveCol = f"is{apc}pcAbove{amaCol}"
+            btc[aboveCol] = (btc.close > btc[amaCol]*(1+apc/100)).astype(int)*btc.close
+            for bd in [3,7,14,30,200]:
+                for bpc in [5,10,20]:
+                    bmaCol = f"SMA{bd}"
+                    belowCol = f"is{bpc}pcBelow{bmaCol}"
+                    
+                    buys = btc.loc[(btc[aboveCol]>0) & (btc[bmaCol].notna()), ["openTime", "close"]].reset_index(drop=True)
+                    if len(buys) == 0:
+                        print(f"Buying {apc}% above {amaCol} and selling {bpc}% below {bmaCol} gives no signal")
+                        continue
+                    buys.columns = ["buyTime", "buyPrice"]
+                    buys["gapCheck"] = buys.buyTime.diff()
+
+                    btc[belowCol] = (btc.close < btc[bmaCol]*(1-bpc/100)).astype(int)*btc.close
+                    sells = btc.loc[btc[belowCol]>0, ["openTime", "close"]].reset_index(drop=True)
+                    sells.rename({"close": "sellPrice"}, axis=1, inplace=True)
+                    for r in range(len(buys)):
+                        buyTime = buys.buyTime[r]
+                        sellTime = sells.openTime[sells.openTime>buyTime].min()
+                        if not pd.isna(sellTime):
+                            buys.loc[r, "sellPrice"] = btc.loc[btc.openTime==sellTime, "close"].values[0]
+                            buys.loc[r, "sellTime"] = sellTime
+                            buys.loc[r, "profit"] = buys.sellPrice[r]/buys.buyPrice[r] - 1
+                        else:
+                            buys.loc[r, "sellPrice"] = np.nan
+                            buys.loc[r, "sellTime"] = np.nan
+                            buys.loc[r, "profit"] = np.nan
+
+                    buys["pair"] = pq.replace(".parquet", "")
+                    buys["MAForBuy"] = ad
+                    buys["abovePCForBuy"] = apc
+                    buys["MAForSell"] = bd
+                    buys["belowPCForSell"] = bpc
+
+                    dfList.append(buys)
+allTrades = pd.concat(dfList, ignore_index=True)
+
+
+perf = pd.read_parquet("D:/binanceOHLC/performance.parquet")
+
+dfList = []
+for pq in os.listdir("D:/binanceOHLC/"):
+    if pq.endswith(".parquet"):
+        try:
+            btc = pd.read_parquet(f"D:/binanceOHLC/{pq}")
+        except Exception as e:
+            print(f"Error reading {pq}: {e}")
+            continue
+    for r in [3,7,14,30,200]:
+        maCol = f"SMA{r}"
+        btc[maCol] = talib.SMA(btc.close, timeperiod=r)
+    adList = []
+    apcList = []
+    bdList = []
+    bpcList = []
+    buyEverySignalList = []
+    buyEverySignalNoTrades = []
+    oneTradeOnAtATimeList = []
+    oneTradeOnAtATimeNoTrades = []
+    for ad in [3,7,14,30,200]:
+        for apc in [5,10,20]:
+            amaCol = f"SMA{ad}"
+            aboveCol = f"is{apc}pcAbove{amaCol}"
+            btc[aboveCol] = (btc.close > btc[amaCol]*(1+apc/100)).astype(int)*btc.close
+            for bd in [3,7,14,30,200]:
+                for bpc in [5,10,20]:
+                    bmaCol = f"SMA{bd}"
+                    belowCol = f"is{bpc}pcBelow{bmaCol}"
+                    
+                    buys = btc.loc[(btc[aboveCol]>0) & (btc[bmaCol].notna()), ["openTime", "close"]].reset_index(drop=True)
+                    if len(buys) == 0:
+                        print(f"Buying {apc}% above {amaCol} and selling {bpc}% below {bmaCol} gives no signal")
+                        continue
+                    buys.columns = ["buyTime", "buyPrice"]
+                    buys["gapCheck"] = buys.buyTime.diff()
+
+                    btc[belowCol] = (btc.close < btc[bmaCol]*(1-bpc/100)).astype(int)*btc.close
+                    sells = btc.loc[btc[belowCol]>0, ["openTime", "close"]].reset_index(drop=True)
+                    sells.rename({"close": "sellPrice"}, axis=1, inplace=True)
+                    for r in range(len(buys)):
+                        buyTime = buys.buyTime[r]
+                        sellTime = sells.openTime[sells.openTime>buyTime].min()
+                        if not pd.isna(sellTime):
+                            buys.loc[r, "sellPrice"] = btc.loc[btc.openTime==sellTime, "close"].values[0]
+                            buys.loc[r, "sellTime"] = sellTime
+                            buys.loc[r, "profit"] = buys.sellPrice[r]/buys.buyPrice[r] - 1
+                        else:
+                            buys.loc[r, "sellPrice"] = np.nan
+                            buys.loc[r, "sellTime"] = np.nan
+                            buys.loc[r, "profit"] = np.nan
+                    adList.append(ad)
+                    apcList.append(apc)
+                    bdList.append(bd)
+                    bpcList.append(bpc)
+                    buyEverySignalList.append(buys[buys.profit.notna()].profit.sum())
+                    buyEverySignalNoTrades.append(len(buys[buys.profit.notna()]))
+                    oneTradeOnAtATimeList.append(buys[(buys.profit.notna()) & (buys.gapCheck>dt.timedelta(days=1))].profit.sum())
+                    oneTradeOnAtATimeNoTrades.append(len(buys[(buys.profit.notna()) & (buys.gapCheck>dt.timedelta(days=1))]))
+    performance = pd.DataFrame({"MAForBuy": adList, "abovePCForBuy": apcList,
+                                "MAForSell": bdList, "belowPCForSell": bpcList,
+                                "performanceBuyEverySignal": buyEverySignalList, "noTradesBuyEverySignal": buyEverySignalNoTrades,
+                                "performanceOneTradeAtATime": oneTradeOnAtATimeList, "noTradesOneTradeAtATime": oneTradeOnAtATimeNoTrades})
+    performance["pair"] = pq.replace(".parquet", "")
+    dfList.append(performance)
+performance = pd.concat(dfList, ignore_index=True)
+performance.to_parquet("D:/binanceOHLC/performance.parquet")
+perf.sort_values("performanceOneTradeAtATime", ascending=False)
+perf.groupby(["MAForBuy", "abovePCForBuy", "MAForSell", "belowPCForSell"])["performanceOneTradeAtATime"].sum().sort_values(ascending=False)
+
+df = pd.read_parquet("D:/binanceOHLC/DOGEUSDT.parquet")
+px.line(df, x="openTime", y="close", title="DOGEUSDT").show()
+
+plotData = btc.melt(id_vars=["openTime"], value_vars=["close"
+"", "is5pcAbove3DMA", "is5pcBelow3DMA"]+[f"SMA{r}" for r in [3,7,14,30,200]])
+fig = px.line(plotData, x="openTime", y="value", color="variable", title="BTCUSDT SMA")
+fig.show()
+
+talib.SMA(btc.close, timeperiod=20)
+talib.ATR(btc.close, btc.high, btc.low, timeperiod=14)
+talib.CDLEVENINGDOJISTAR(btc.open, btc.high, btc.low, btc.close).unique()
+
+api_key = os.environ.get("binance_api")
+api_secret = os.environ.get("binance_secret")
+bClient = Client(api_key=api_key, api_secret=api_secret)
+
+allPairs = pd.DataFrame(bClient.get_all_tickers())
+allPairs = allPairs[allPairs.symbol.str.endswith("USDT")].reset_index(drop=True)
+
+for p in allPairs.symbol:
+    ohlc = []
+    for y in range(2017, 2026):
+        startDay = dt.datetime(y, 1, 1)
+        endDay = dt.datetime(y, 12, 31)
+        try:
+            ohlc += bClient.get_historical_klines(symbol=p, interval=bClient.KLINE_INTERVAL_1DAY, start_str=str(startDay), end_str=str(endDay))
+            print(f"Got {p} {startDay} to {endDay} data")
+        except Exception as e:
+            print(f"Error: {e}")
+    ohlc = pd.DataFrame(ohlc)
+    ohlc.columns = ["openTime", "open", "high", "low", "close", "volume", "closeTime", "quoteAssetVol", "numOfTrades", "takerBuyBaseAssetVol", "takerBuyQuoteAssetVol", "ignore"]
+    for c in ["openTime", "closeTime"]:
+        ohlc[c] = pd.to_datetime(ohlc[c], unit="ms")
+    for c in ["open", "high", "low", "close", "volume", "quoteAssetVol", "takerBuyBaseAssetVol", "takerBuyQuoteAssetVol"]:
+        ohlc[c] = ohlc[c].astype(float)
+    ohlc.to_parquet(f"D:/binanceOHLC/{p}.parquet")
+
+
+
+
+# visualy check the data
+def plotOHLC(pair:str, startTime=None, endTime=None):
+    """
+    Plot OHLC data
+
+    Parameters
+    ----------
+    pair      : Coin pair as listed in Binance
+    startTime  : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
+    endTime   : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
+    """
+    filename = f"D:/binanceOHLC/{pair}.parquet"
+    if not os.path.exists(filename):
+        print(f"File {filename} does not exist")
+        return
+    ohlc = pd.read_parquet(filename)
+
+    if startTime:
+        ohlc = ohlc[ohlc.openTime>=startTime].copy()
+    if endTime:
+        ohlc = ohlc[ohlc.openTime<=endTime].copy()
+    
+    fig = go.Figure(data=go.Ohlc(x=ohlc.openTime, open=ohlc.open, high=ohlc.high, low=ohlc.low, close=ohlc.close))
+    fig.show()
+
+plotOHLC("DOTUSDT")
+
 
 class BinanceClient:
     """
@@ -156,6 +355,8 @@ class BinanceClient:
         return trades
 
 binanceClient = BinanceClient()
+
+
 
 trades = binanceClient.get_trades()
 trades = trades[["symbol", "price", "qty", "quoteQty", "commission", "commissionAsset", "time", "isBuyer"]].copy()
