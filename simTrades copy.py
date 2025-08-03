@@ -1,16 +1,375 @@
-"""
-Script to calculate Binance trades PNL for tax purposes.
-"""
-
 import datetime as dt
 import numpy as np
 import pandas as pd
 import pytz
 import time
+import talib
 
 # stand up Binance API client instance
 import os
 from binance.client import Client
+
+# plotly
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from multiprocessing import Pool
+from contextlib import closing
+
+import logging
+
+# priceList = [s for s in os.listdir("D:/binanceOHLC/") if s.endswith("USDT.parquet")]
+
+# def modPriceData(filename):
+#     """
+#     Modify price data to include moving averages
+#     """    
+#     df = pd.read_parquet(f"D:/binanceOHLC/{filename}")
+#     df = df[["openTime", "closeTime", "open", "high", "low", "close", "volume"]].copy()
+#     for r in [3,7,14,30,200]:
+#         maCol = f"SMA{r}"
+#         df[maCol] = talib.SMA(df.close, timeperiod=r)
+#     df["coin"] = filename.replace("USDT.parquet", "")
+#     df.to_parquet(f"D:/modPrices/{filename}")
+
+# if __name__ == "__main__":
+#     with closing(Pool(12)) as p:
+#         p.map(modPriceData, priceList)
+
+
+# price = pd.read_parquet("D:/binanceSMAPrices.parquet")
+# mc = pd.read_parquet("D:/market_capitalisation_20250609.parquet")
+# mc["coin"] = mc.pair.str.replace("USDT", "")
+# mc.drop(columns=["pair"], inplace=True)
+# price = price.merge(mc, how="left", on="coin")
+
+# for r in [3,7,14,30,200]:
+#     maCol = f"SMA{r}"
+#     for p in [.15]:
+#         aboveCol = f"is{int(p*100)}pcAbove{maCol}"
+#         belowCol = f"is{int(p*100)}pcBelow{maCol}"
+#         price[aboveCol] = (price.close > price[maCol]*(1+p))
+#         price[belowCol] = (price.close < price[maCol]*(1-p))
+
+# for r in [3,7,14,30,200]:
+#     maCol = f"SMA{r}"
+#     for p in [15]:
+#         aboveCol = f"is{p}pcAbove{maCol}"
+#         price[aboveCol] = price[aboveCol].astype(int)
+#         price[aboveCol] = price.groupby("coin")[aboveCol].diff()
+
+# price = price[price["rank"].notna()].reset_index(drop=True)
+
+price = pd.read_parquet("D:/binanceSMAPrices.parquet")
+
+positionsList = []
+portfolioSizeList = []
+for buySMA in [3, 7, 14, 30, 200]:
+    for abovePCForBuy in [0.05, 0.1, 0.15, 0.2]:
+        for sellSMA in [3, 7, 14, 30, 200]:
+            for belowPCForSell in [0.05, 0.1, 0.15, 0.2]:
+                for sl in [0.05, 0.1, 0.15, 0.2]:
+                    portfolioSize = pd.DataFrame({"date": price.openTime.min(), "portfolioSize": 1}, index=[0])
+                    positions = pd.DataFrame(columns=["coin", 'buyTime', 'buyPrice', 'sellPrice', 'sellTime', 'profit', 'entrySize', 'exitSize'])
+                    buySMAColName = f"is{int(abovePCForBuy*100)}pcAboveSMA{buySMA}"
+                    sellSMAColName = f"is{int(belowPCForSell*100)}pcBelowSMA{sellSMA}"
+                    tradeTime = price[price[buySMAColName]==1].openTime.min()
+                    maxOpenTrades = 10
+
+                    while tradeTime <= price.openTime.max():
+                        
+                        # number of open trades
+                        noOpenTrades = 0 if len(positions)==0 else positions.exitSize.isna().sum()
+
+                        if noOpenTrades > 0:
+
+                            slCheck = positions[positions.exitSize.isna()].copy()
+                            priceSubset = price.loc[price.openTime==tradeTime, ["coin", "openTime", "low", "close", f"{sellSMAColName}"]]
+                            slCheck = slCheck.merge(priceSubset, how="left", on="coin")
+                            # if lowest price of the day is below stop-loss threshold, sell
+                            # otherwise, if the sell signal is triggered, sell
+                            # if both conditions are not met, do nothing
+                            slCheck["sellPrice"] = np.where(slCheck.low <= (1-sl)*slCheck.buyPrice, (1-sl)*slCheck.buyPrice,
+                                                            np.where(slCheck[f"{sellSMAColName}"], slCheck.close, np.nan))
+                            slCheck = slCheck[slCheck.sellPrice.notna()].reset_index(drop=True)
+                            if len(slCheck) > 0:
+                                slCheck.drop(columns="sellTime", inplace=True)
+                                slCheck.rename({"openTime": "sellTime"}, axis=1, inplace=True)
+                                slCheck["profit"] = slCheck.sellPrice/slCheck.buyPrice - 1
+                                slCheck["exitSize"] = slCheck.entrySize*(1+slCheck.profit)
+                                # ID made by concatenating coin and entry time to ensure uniqueness
+                                slCheckID = list(slCheck.coin + slCheck.buyTime.astype(str))
+
+                                positions = pd.concat([positions[~(positions.coin + positions.buyTime.astype(str)).isin(slCheckID)], slCheck[positions.columns]], ignore_index=True)
+
+                                portfolioSize.loc[len(portfolioSize), ["date", "portfolioSize"]] = [
+                                    tradeTime,
+                                    portfolioSize.portfolioSize.iloc[-1] * (1 - len(slCheck) / maxOpenTrades) # adjusted size of open trades
+                                    + slCheck.exitSize.sum() # realised size of closed trades
+                                    ]
+
+                                noOpenTrades -= len(slCheck)
+
+                        # possible entries
+                        possibleBuys = price[(price.openTime == tradeTime) & (price[buySMAColName]==1)].reset_index(drop=True)
+                        if len(possibleBuys) > 0:
+                            
+                            # number of possible buys
+                            noPossibleBuys = max(0, maxOpenTrades - noOpenTrades)
+
+                            if noPossibleBuys > 0:
+                                possibleBuys = possibleBuys.nlargest(noPossibleBuys, "volume")
+
+                                entrySize = .1 * portfolioSize.portfolioSize.iloc[-1]
+                                possibleBuys["entrySize"] = entrySize
+                                possibleBuys.rename({"openTime": "buyTime", "close": "buyPrice"}, axis=1, inplace=True)
+                                positions = pd.concat([positions, possibleBuys[["coin", "buyTime", "buyPrice", "entrySize"]]], ignore_index=True)
+                                # print(f"Added {len(possibleBuys)} trades at {tradeTime} with entry size {entrySize}")
+
+                        tradeTime += dt.timedelta(days=1)
+
+                    positions[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl]
+                    portfolioSize[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl]
+                    positionsList.append(positions)
+                    portfolioSizeList.append(portfolioSize)
+
+positions = pd.concat(positionsList, ignore_index=True)
+portfolioSize = pd.concat(portfolioSizeList, ignore_index=True)
+positions.to_parquet("D:/simTrades_allMAs.parquet")
+portfolioSize.to_parquet("D:/simPortfolioSize_allMAs.parquet")
+
+
+mc = pd.read_excel("D:/market_capitalisation.xlsx", sheet_name="2025-06-09")
+mc.coin = mc.coin.shift(-2)
+mc = mc[mc["rank"].notna()].reset_index(drop=True)
+mc = mc.groupby("coin")["rank"].nsmallest(1).reset_index()[["coin", "rank"]].sort_values("rank", ascending=True).reset_index(drop=True)
+mc["pair"] = mc.coin + "USDT"
+mc[["rank", "pair"]].to_parquet("D:/market_capitalisation_20250609.parquet")
+
+def getSelectiveTrades(df, n=10):
+    return df.nsmallest(n, "rank")
+
+positionList = []
+portfolioSizeList = []
+
+
+
+for f in os.listdir("D:/binanceOHLC/"):
+    if f.endswith("USDT.parquet"):
+        try:
+            price = pd.read_parquet(f"D:/binanceOHLC/{f}")
+        except Exception as e:
+            print(f"Error reading {f}: {e}")
+            continue
+        pair = f.replace(".parquet", "")
+        for i in df.index[df.pair==pair]:
+            df.loc[i,"localMinPrice"] = price[price.openTime.between(df.loc[i,"buyTime"],df.loc[i,"sellTime"],inclusive="right")].low.min()
+
+for sl in [.05, .1, .15, .2]:
+    slStr = str(int(sl*100)).zfill(2)
+    df[f"SL{slStr}Profit"] = np.where((df.buyPrice - df.localMinPrice)/df.buyPrice>=sl, -sl, df.profit)
+
+
+dfList = []
+for pq in os.listdir("D:/binanceOHLC/"):
+    if pq.endswith("USDT.parquet"):
+        try:
+            btc = pd.read_parquet(f"D:/binanceOHLC/{pq}")
+        except Exception as e:
+            print(f"Error reading {pq}: {e}")
+            continue
+    for r in [3,7,14,30,200]:
+        maCol = f"SMA{r}"
+        btc[maCol] = talib.SMA(btc.close, timeperiod=r)
+    for ad in [3,7,14,30,200]:
+        for apc in [5,10,20]:
+            amaCol = f"SMA{ad}"
+            aboveCol = f"is{apc}pcAbove{amaCol}"
+            btc[aboveCol] = (btc.close > btc[amaCol]*(1+apc/100)).astype(int)*btc.close
+            for bd in [3,7,14,30,200]:
+                for bpc in [5,10,20]:
+                    bmaCol = f"SMA{bd}"
+                    belowCol = f"is{bpc}pcBelow{bmaCol}"
+                    
+                    buys = btc.loc[(btc[aboveCol]>0) & (btc[bmaCol].notna()), ["openTime", "close"]].reset_index(drop=True)
+                    if len(buys) == 0:
+                        print(f"Buying {apc}% above {amaCol} and selling {bpc}% below {bmaCol} gives no signal")
+                        continue
+                    buys.columns = ["buyTime", "buyPrice"]
+                    buys["gapCheck"] = buys.buyTime.diff()
+
+                    btc[belowCol] = (btc.close < btc[bmaCol]*(1-bpc/100)).astype(int)*btc.close
+                    sells = btc.loc[btc[belowCol]>0, ["openTime", "close"]].reset_index(drop=True)
+                    sells.rename({"close": "sellPrice"}, axis=1, inplace=True)
+                    for r in range(len(buys)):
+                        buyTime = buys.buyTime[r]
+                        sellTime = sells.openTime[sells.openTime>buyTime].min()
+                        if not pd.isna(sellTime):
+                            buys.loc[r, "sellPrice"] = btc.loc[btc.openTime==sellTime, "close"].values[0]
+                            buys.loc[r, "sellTime"] = sellTime
+                            buys.loc[r, "profit"] = buys.sellPrice[r]/buys.buyPrice[r] - 1
+                        else:
+                            buys.loc[r, "sellPrice"] = np.nan
+                            buys.loc[r, "sellTime"] = np.nan
+                            buys.loc[r, "profit"] = np.nan
+
+                    buys["pair"] = pq.replace(".parquet", "")
+                    buys["MAForBuy"] = ad
+                    buys["abovePCForBuy"] = apc
+                    buys["MAForSell"] = bd
+                    buys["belowPCForSell"] = bpc
+
+                    dfList.append(buys)
+allTrades = pd.concat(dfList, ignore_index=True)
+
+for sl in [.05, .1, .15, .2]:
+    slStr = str(int(sl*100)).zfill(2)
+    allTrades[f"SL{slStr}Profit"] = allTrades.profit.clip(lower=-sl)
+
+allTrades = df.copy()
+
+oneBuyATime = allTrades[(allTrades.profit.notna()) & (allTrades.gapCheck>dt.timedelta(days=1))].reset_index(drop=True)
+oneBuyATime.groupby(["MAForBuy", "abovePCForBuy", "MAForSell", "belowPCForSell"])["profit"].sum().sort_values(ascending=False)
+oneBuyATime.groupby(["MAForBuy", "abovePCForBuy", "MAForSell", "belowPCForSell"])["SL20Profit"].sum().sort_values(ascending=False)
+
+perf = pd.read_parquet("D:/binanceOHLC/performance.parquet")
+
+dfList = []
+for pq in os.listdir("D:/binanceOHLC/"):
+    if pq.endswith(".parquet"):
+        try:
+            btc = pd.read_parquet(f"D:/binanceOHLC/{pq}")
+        except Exception as e:
+            print(f"Error reading {pq}: {e}")
+            continue
+    for r in [3,7,14,30,200]:
+        maCol = f"SMA{r}"
+        btc[maCol] = talib.SMA(btc.close, timeperiod=r)
+    adList = []
+    apcList = []
+    bdList = []
+    bpcList = []
+    buyEverySignalList = []
+    buyEverySignalNoTrades = []
+    oneTradeOnAtATimeList = []
+    oneTradeOnAtATimeNoTrades = []
+    for ad in [3,7,14,30,200]:
+        for apc in [5,10,20]:
+            amaCol = f"SMA{ad}"
+            aboveCol = f"is{apc}pcAbove{amaCol}"
+            btc[aboveCol] = (btc.close > btc[amaCol]*(1+apc/100)).astype(int)*btc.close
+            for bd in [3,7,14,30,200]:
+                for bpc in [5,10,20]:
+                    bmaCol = f"SMA{bd}"
+                    belowCol = f"is{bpc}pcBelow{bmaCol}"
+                    
+                    buys = btc.loc[(btc[aboveCol]>0) & (btc[bmaCol].notna()), ["openTime", "close"]].reset_index(drop=True)
+                    if len(buys) == 0:
+                        print(f"Buying {apc}% above {amaCol} and selling {bpc}% below {bmaCol} gives no signal")
+                        continue
+                    buys.columns = ["buyTime", "buyPrice"]
+                    buys["gapCheck"] = buys.buyTime.diff()
+
+                    btc[belowCol] = (btc.close < btc[bmaCol]*(1-bpc/100)).astype(int)*btc.close
+                    sells = btc.loc[btc[belowCol]>0, ["openTime", "close"]].reset_index(drop=True)
+                    sells.rename({"close": "sellPrice"}, axis=1, inplace=True)
+                    for r in range(len(buys)):
+                        buyTime = buys.buyTime[r]
+                        sellTime = sells.openTime[sells.openTime>buyTime].min()
+                        if not pd.isna(sellTime):
+                            buys.loc[r, "sellPrice"] = btc.loc[btc.openTime==sellTime, "close"].values[0]
+                            buys.loc[r, "sellTime"] = sellTime
+                            buys.loc[r, "profit"] = buys.sellPrice[r]/buys.buyPrice[r] - 1
+                        else:
+                            buys.loc[r, "sellPrice"] = np.nan
+                            buys.loc[r, "sellTime"] = np.nan
+                            buys.loc[r, "profit"] = np.nan
+                    adList.append(ad)
+                    apcList.append(apc)
+                    bdList.append(bd)
+                    bpcList.append(bpc)
+                    buyEverySignalList.append(buys[buys.profit.notna()].profit.sum())
+                    buyEverySignalNoTrades.append(len(buys[buys.profit.notna()]))
+                    oneTradeOnAtATimeList.append(buys[(buys.profit.notna()) & (buys.gapCheck>dt.timedelta(days=1))].profit.sum())
+                    oneTradeOnAtATimeNoTrades.append(len(buys[(buys.profit.notna()) & (buys.gapCheck>dt.timedelta(days=1))]))
+    performance = pd.DataFrame({"MAForBuy": adList, "abovePCForBuy": apcList,
+                                "MAForSell": bdList, "belowPCForSell": bpcList,
+                                "performanceBuyEverySignal": buyEverySignalList, "noTradesBuyEverySignal": buyEverySignalNoTrades,
+                                "performanceOneTradeAtATime": oneTradeOnAtATimeList, "noTradesOneTradeAtATime": oneTradeOnAtATimeNoTrades})
+    performance["pair"] = pq.replace(".parquet", "")
+    dfList.append(performance)
+performance = pd.concat(dfList, ignore_index=True)
+performance.to_parquet("D:/binanceOHLC/performance.parquet")
+perf.sort_values("performanceOneTradeAtATime", ascending=False)
+perf.groupby(["MAForBuy", "abovePCForBuy", "MAForSell", "belowPCForSell"])["performanceOneTradeAtATime"].sum().sort_values(ascending=False)
+
+df = pd.read_parquet("D:/binanceOHLC/DOGEUSDT.parquet")
+px.line(df, x="openTime", y="close", title="DOGEUSDT").show()
+
+plotData = btc.melt(id_vars=["openTime"], value_vars=["close"
+"", "is5pcAbove3DMA", "is5pcBelow3DMA"]+[f"SMA{r}" for r in [3,7,14,30,200]])
+fig = px.line(plotData, x="openTime", y="value", color="variable", title="BTCUSDT SMA")
+fig.show()
+
+talib.SMA(btc.close, timeperiod=20)
+talib.ATR(btc.close, btc.high, btc.low, timeperiod=14)
+talib.CDLEVENINGDOJISTAR(btc.open, btc.high, btc.low, btc.close).unique()
+
+api_key = os.environ.get("binance_api")
+api_secret = os.environ.get("binance_secret")
+bClient = Client(api_key=api_key, api_secret=api_secret)
+
+allPairs = pd.DataFrame(bClient.get_all_tickers())
+allPairs = allPairs[allPairs.symbol.str.endswith("USDT")].reset_index(drop=True)
+
+for p in allPairs.symbol:
+    ohlc = []
+    for y in range(2017, 2026):
+        startDay = dt.datetime(y, 1, 1)
+        endDay = dt.datetime(y, 12, 31)
+        try:
+            ohlc += bClient.get_historical_klines(symbol=p, interval=bClient.KLINE_INTERVAL_1DAY, start_str=str(startDay), end_str=str(endDay))
+            print(f"Got {p} {startDay} to {endDay} data")
+        except Exception as e:
+            print(f"Error: {e}")
+    ohlc = pd.DataFrame(ohlc)
+    ohlc.columns = ["openTime", "open", "high", "low", "close", "volume", "closeTime", "quoteAssetVol", "numOfTrades", "takerBuyBaseAssetVol", "takerBuyQuoteAssetVol", "ignore"]
+    for c in ["openTime", "closeTime"]:
+        ohlc[c] = pd.to_datetime(ohlc[c], unit="ms")
+    for c in ["open", "high", "low", "close", "volume", "quoteAssetVol", "takerBuyBaseAssetVol", "takerBuyQuoteAssetVol"]:
+        ohlc[c] = ohlc[c].astype(float)
+    ohlc.to_parquet(f"D:/binanceOHLC/{p}.parquet")
+
+
+
+
+# visualy check the data
+def plotOHLC(pair:str, startTime=None, endTime=None):
+    """
+    Plot OHLC data
+
+    Parameters
+    ----------
+    pair      : Coin pair as listed in Binance
+    startTime  : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
+    endTime   : Can be datetime/pandas.Timestamp object or str in yyyy-mm-dd hh:mm:ss format
+    """
+    filename = f"D:/binanceOHLC/{pair}.parquet"
+    if not os.path.exists(filename):
+        print(f"File {filename} does not exist")
+        return
+    ohlc = pd.read_parquet(filename)
+
+    if startTime:
+        ohlc = ohlc[ohlc.openTime>=startTime].copy()
+    if endTime:
+        ohlc = ohlc[ohlc.openTime<=endTime].copy()
+    
+    fig = go.Figure(data=go.Ohlc(x=ohlc.openTime, open=ohlc.open, high=ohlc.high, low=ohlc.low, close=ohlc.close))
+    fig.show()
+
+plotOHLC("DOTUSDT")
 
 
 class BinanceClient:
