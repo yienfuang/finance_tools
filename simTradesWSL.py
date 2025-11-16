@@ -8,14 +8,15 @@ from itertools import product
 from multiprocessing import Pool
 from contextlib import closing
 
-price = pd.read_parquet("D:/binanceSMAPrices.parquet")
+rawPrices = pd.read_parquet("D:/binanceSMAPrices.parquet")
 
 buySMACombo = [3, 7, 14, 30, 200]
 abovePCForBuyCombo = [0.05, 0.1, 0.15, 0.2]
 sellSMACombo = [3, 7, 14, 30, 200]
 belowPCForSellCombo = [0.05, 0.1, 0.15, 0.2]
 slCombo = [0.05, 0.1, 0.15, 0.2]
-parameterCombos = product(buySMACombo, abovePCForBuyCombo, sellSMACombo, belowPCForSellCombo, slCombo)
+startDateCombo = pd.date_range(rawPrices.openTime.min(), rawPrices.openTime.max() - dt.timedelta(days=365), freq=dt.timedelta(days=90))
+parameterCombos = product(buySMACombo, abovePCForBuyCombo, sellSMACombo, belowPCForSellCombo, slCombo, startDateCombo)
 
 positionsList = []
 portfolioSizeList = []
@@ -24,9 +25,12 @@ logger = logging.getLogger()
 handler = logging.FileHandler("D:/simTradesWSL.log")
 logger.addHandler(handler)
 
-def simTradesWSL(buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl):
+def simTradesWSL(buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl, startDate):
     
     logger.error(f"Simulating buySMA:{buySMA} abovePCForBuy:{abovePCForBuy} sellSMA:{sellSMA} belowPCForSell:{belowPCForSell} sl:{sl}")
+
+    # change start date of raw prices
+    price = rawPrices[rawPrices.openTime >= startDate].reset_index(drop=True)
 
     portfolioSize = pd.DataFrame({"date": price.openTime.min(), "portfolioSize": 1}, index=[0])
     positions = pd.DataFrame(columns=["coin", 'buyTime', 'buyPrice', 'sellPrice', 'sellTime', 'profit', 'entrySize', 'exitSize'])
@@ -97,12 +101,12 @@ def simTradesWSL(buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl):
 
         tradeTime += dt.timedelta(days=1)
 
-    positions[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl]
-    portfolioSize[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl]
-    positions.to_parquet(f"D:/temp/positions_{buySMA}_{int(abovePCForBuy*100)}pcAboveSMA_{sellSMA}_{int(belowPCForSell*100)}pcBelowSMA_{sl}.parquet")
-    portfolioSize.to_parquet(f"D:/temp/portfolioSize_{buySMA}_{int(abovePCForBuy*100)}pcAboveSMA_{sellSMA}_{int(belowPCForSell*100)}pcBelowSMA_{sl}.parquet")
+    positions[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl", "startDate"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl, startDate]
+    portfolioSize[["buySMA", "abovePCForBuy", "sellSMA", "belowPCForSell", "sl", "startDate"]] = [buySMA, abovePCForBuy, sellSMA, belowPCForSell, sl, startDate]
+    positions.to_parquet(f"D:/temp/positions_{buySMA}_{int(abovePCForBuy*100)}pcAboveSMA_{sellSMA}_{int(belowPCForSell*100)}pcBelowSMA_{sl}_startDate{startDate.strftime('%Y%m%d')}.parquet")
+    portfolioSize.to_parquet(f"D:/temp/portfolioSize_{buySMA}_{int(abovePCForBuy*100)}pcAboveSMA_{sellSMA}_{int(belowPCForSell*100)}pcBelowSMA_{sl}_startDate{startDate.strftime('%Y%m%d')}.parquet")
 
-    logger.error(f"Simulation completed for buySMA:{buySMA} abovePCForBuy:{abovePCForBuy} sellSMA:{sellSMA} belowPCForSell:{belowPCForSell} sl:{sl}. Trades and portfolio sized appended")
+    logger.error(f"Simulation completed for buySMA:{buySMA} abovePCForBuy:{abovePCForBuy} sellSMA:{sellSMA} belowPCForSell:{belowPCForSell} sl:{sl} startDate:{startDate}. Trades and portfolio sized appended")
 
 if __name__ == "__main__":
 

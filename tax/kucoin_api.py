@@ -16,7 +16,12 @@ from binance.client import Client
 # KuCoin API client instance
 import kucoin as kcs
 
-kcClient = kcs.KucoinSync({"apiKey": os.environ.get("kucoin_api"), "secret": os.environ.get("kucoin_secret"), "password": os.environ.get("kucoin_pwd")})
+# KuCoin creds
+kcsKey = os.environ.get("kucoin_api")
+kcsSecret = os.environ.get("kucoin_secret")
+kcsPwd = os.environ.get("kucoin_pwd")
+kcClient = kcs.KucoinSync({"apiKey": kcsKey, "secret": kcsSecret, "password": kcsPwd})
+
 kucoinTrades = pd.DataFrame()
 # had to do this because fetchMyTrades only fetches trades up to 7 days since a particular timestamp
 for d in pd.date_range(start="2024-07-01", end="2025-07-01", freq=dt.timedelta(days=7), tz="UTC"):
