@@ -98,3 +98,24 @@ def CalculateMortgageEnd(mortgageRemainder, mortgageStart, repaymentAmount,
         return df
     else:
         print("Mortgage finishes on {}".format(mortgageTS.strftime("%Y-%m-%d")))
+
+
+def pickShares(companyList="C:/users/a30004759/downloads/asx202312.csv"):
+    """
+    1. Get company list from https://www.asx.com.au/markets/trade-our-cash-market/directory
+    2. Save it somewhere locally and point the function to it
+    """
+
+    df = pd.read_csv(companyList)
+
+    # convert market cap into float
+    df.rename({"Market Cap": "market_cap"}, axis=1, inplace=True)
+    df = df[df.market_cap.notna()].reset_index(drop=True)
+    df = df[df.market_cap.str[0].isin(np.arange(1,10).astype(str))].reset_index(drop=True)
+    df.market_cap = df.market_cap.astype(float)
+
+    # pick the ASX 500 companies
+    df.sort_values("market_cap", ascending=False, inplace=True, ignore_index=True)
+    df = df.loc[:499].copy()
+
+    return df[df.index.isin(np.random.choice(np.arange(1,501), size=4, replace=False))]
